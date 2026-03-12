@@ -5,7 +5,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import List, Optional
 
-from formatting import format_results
+from formatting import format_results, format_official_report
 from workbook import count_workbook, get_sheet_names
 
 
@@ -223,6 +223,8 @@ class ElectionApp:
                 random_seed=random_seed,
                 selected_sheet=self.sheet_var.get(),
             )
+
+            self.last_results = results
             formatted = format_results(results)
             self.output.delete("1.0", tk.END)
             self.output.insert(tk.END, formatted)
@@ -230,29 +232,45 @@ class ElectionApp:
             messagebox.showerror("Count failed", str(exc), parent=self.root)
 
     def save_results(self) -> None:
+
         if self.output is None:
             return
 
         content = self.output.get("1.0", tk.END).strip()
+
         if not content:
-            messagebox.showinfo("Nothing to save", "There are no results to save yet.", parent=self.root)
+            messagebox.showinfo(
+                "Nothing to save",
+                "There are no results to save yet.",
+                parent=self.root,
+            )
             return
 
         file_path = filedialog.asksaveasfilename(
-            title="Save results",
+            title="Save results report",
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
         )
 
         if not file_path:
             return
 
         try:
-            with open(file_path, "w", encoding="utf-8") as handle:
-                handle.write(content)
-            messagebox.showinfo("Saved", "Results saved successfully.", parent=self.root)
-        except Exception as exc:
-            messagebox.showerror("Save failed", str(exc), parent=self.root)
+            # Use the official report format instead of raw logs
+            results = self.last_results
+            report = format_official_report(results)
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(report)
+
+            messagebox.showinfo(
+                "Saved",
+                "Election report saved successfully.",
+                parent=self.root
+            )
+
+        except Exception as e:
+            messagebox.showerror("Save failed", str(e), parent=self.root)
 
     def clear_output(self) -> None:
         if self.output is not None:

@@ -85,3 +85,48 @@ def format_results(results: List[Dict]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+def format_official_report(results):
+    lines = []
+
+    lines.append("STUDENT REPRESENTATIVE COUNCIL ELECTION RESULTS")
+    lines.append("")
+    lines.append(f"Count conducted: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("Counting method: Single Transferable Vote (Droop quota)")
+    lines.append("")
+
+    for result in results:
+        lines.append("=" * 50)
+        lines.append(f"RACE: {result['sheet_name']}")
+        lines.append("=" * 50)
+
+        lines.append(f"Formal votes: {result['total_formal_votes']}")
+        lines.append(f"Quota: {result['quota']}")
+        lines.append("")
+
+        lines.append("Elected Candidates:")
+
+        for i, winner in enumerate(result["winners"], start=1):
+            lines.append(f"{i}. {winner}")
+
+        lines.append("")
+        lines.append("Round Summary:")
+
+        for i, rnd in enumerate(result["rounds"], start=1):
+
+            action = rnd.get("action", "")
+
+            if rnd.get("elected_this_round"):
+                for candidate in rnd["elected_this_round"]:
+                    lines.append(f"Round {i}: {candidate} elected")
+
+            elif rnd.get("excluded_this_round"):
+                lines.append(f"Round {i}: {rnd['excluded_this_round']} excluded")
+
+            elif action:
+                lines.append(f"Round {i}: {action}")
+
+        lines.append("")
+        lines.append("")
+
+    return "\n".join(lines)
