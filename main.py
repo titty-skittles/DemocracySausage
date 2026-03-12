@@ -215,7 +215,6 @@ class STVCounter:
         quota = math.floor(total_formal / (self.seats + 1)) + 1 if total_formal > 0 else 0
 
         elected: List[str] = []
-        excluded: List[str] = []
         continuing = candidates[:]
         rounds: List[Dict] = []
         tally_history: List[Dict[str, float]] = []
@@ -233,6 +232,7 @@ class STVCounter:
                         "elected_this_round": [],
                         "excluded_this_round": None,
                         "notes": ["No formal votes were found on this sheet."],
+                        "action": "No count possible",
                     }
                 ],
             }
@@ -241,11 +241,16 @@ class STVCounter:
             tallies, piles = self.count_votes(ballots, continuing)
             tally_history.append(tallies.copy())
 
+            active_ballot_value = sum(tallies.values())
+
             round_info = {
                 "tallies": {candidate: round(votes, 6) for candidate, votes in tallies.items()},
                 "elected_this_round": [],
                 "excluded_this_round": None,
                 "notes": [],
+                "action": "",
+                "continuing_candidates": continuing[:],
+                "active_ballot_value": round(active_ballot_value, 6),
             }
 
             at_quota = [candidate for candidate in continuing if tallies[candidate] >= quota]
@@ -271,8 +276,8 @@ class STVCounter:
                             f"Election order tie in {sheet_name}",
                         )
                         round_info["notes"].append(
-                            f"Election order tie between {', '.join(sorted(tied))}; "
-                            f"resolved in favour of {chosen}."
+                            f"Election order tie between {', '.join(sorted(tied))}. "
+                            f"Tie resolved in favour of {chosen}."
                         )
 
                     ordered_elections.append(chosen)
@@ -294,15 +299,18 @@ class STVCounter:
                             ballot.weight *= transfer_value
                             ballot.index += 1
                         round_info["notes"].append(
-                            f"{candidate} elected with surplus {surplus:.6f}; "
-                            f"transferred at value {transfer_value:.6f}."
+                            f"{candidate} reached quota and was elected. "
+                            f"Surplus = {surplus:.6f}. Transfer value = {transfer_value:.6f}."
                         )
                     else:
                         for ballot in piles[candidate]:
                             ballot.weight = 0.0
                         round_info["notes"].append(
-                            f"{candidate} elected exactly on quota; no surplus transferred."
+                            f"{candidate} reached quota exactly and was elected. "
+                            f"No surplus was transferred."
                         )
+
+                round_info["action"] = f"Elect {', '.join(round_info['elected_this_round'])}"
 
                 continuing = [
                     candidate
@@ -319,7 +327,10 @@ class STVCounter:
                             "tallies": {},
                             "elected_this_round": continuing[:],
                             "excluded_this_round": None,
-                            "notes": ["Remaining candidates filled the remaining vacancies."],
+                            "notes": ["The remaining candidates filled the remaining vacancies."],
+                            "action": f"Declare remaining candidates elected: {', '.join(continuing)}",
+                            "continuing_candidates": continuing[:],
+                            "active_ballot_value": 0.0,
                         }
                     )
                     break
@@ -342,12 +353,12 @@ class STVCounter:
                     f"Exclusion tie in {sheet_name}",
                 )
                 round_info["notes"].append(
-                    f"Exclusion tie between {', '.join(sorted(tied_lowest))}; "
-                    f"resolved by excluding {to_exclude}."
+                    f"Exclusion tie between {', '.join(sorted(tied_lowest))}. "
+                    f"Tie resolved by excluding {to_exclude}."
                 )
 
-            excluded.append(to_exclude)
             round_info["excluded_this_round"] = to_exclude
+            round_info["action"] = f"Exclude {to_exclude}"
 
             for ballot in piles[to_exclude]:
                 ballot.index += 1
@@ -363,7 +374,10 @@ class STVCounter:
                         "tallies": {},
                         "elected_this_round": continuing[:],
                         "excluded_this_round": None,
-                        "notes": ["Remaining candidates filled the remaining vacancies."],
+                        "notes": ["The remaining candidates filled the remaining vacancies."],
+                        "action": f"Declare remaining candidates elected: {', '.join(continuing)}",
+                        "continuing_candidates": continuing[:],
+                        "active_ballot_value": 0.0,
                     }
                 )
                 break
@@ -417,38 +431,81 @@ def format_results(results: List[Dict]) -> str:
     lines: List[str] = []
 
     for result in results:
-        lines.append(f"=== {result['sheet_name']} ===")
-        lines.append(f"Formal votes: {result['total_formal_votes']}")
+        lines.append("=" * 72)
+        lines.append(f"RACE: {result['sheet_name']}")
+        lines.append("=" * 72)
+        lines.append(f"Formal votes:   {result['total_formal_votes']}")
         lines.append(f"Informal votes: {result['informal_votes']}")
-        lines.append(f"Quota: {result['quota']}")
+        lines.append(f"Quota:          {result['quota']}")
         lines.append("")
 
         for round_number, rnd in enumerate(result["rounds"], start=1):
-            lines.append(f"Round {round_number}")
+            lines.append(f"Round #{round_number}")
+            lines.append("-" * 72)
 
-            if rnd["tallies"]:
-                for candidate, votes in rnd["tallies"].items():
-                    lines.append(f"  {candidate}: {votes:.6f}")
+            tallies = rnd.get("tallies", {})
+            active_ballot_value = sum(tallies.values())
+
+            continuing_candidates = rnd.get("continuing_candidates", [])
+
+            if continuing_candidates:
+                lines.append(f"Candidates remaining: {len(continuing_candidates)}")
+                lines.append(f"Continuing:           {', '.join(continuing_candidates)}")
+
+            if tallies:
+                lines.append(f"Active ballot value:  {active_ballot_value:.6f}")
+                if result["quota"] > 0:
+                    lines.append(f"Quota:                {result['quota']}")
+                lines.append("")
+                lines.append("Candidate tallies:")
+
+                ordered = sorted(tallies.items(), key=lambda x: (-x[1], x[0]))
+                for candidate, votes in ordered:
+                    percent = (votes / active_ballot_value * 100) if active_ballot_value > 0 else 0
+                    lines.append(f"  {candidate}: {votes:.6f} ({percent:.2f}%)")
+
+                highest_candidate, highest_votes = ordered[0]
+                lowest_candidate, lowest_votes = ordered[-1]
+
+                highest_percent = (highest_votes / active_ballot_value * 100) if active_ballot_value > 0 else 0
+                lowest_percent = (lowest_votes / active_ballot_value * 100) if active_ballot_value > 0 else 0
+
+                lines.append("")
+                lines.append(
+                    f"Highest: {highest_candidate} with {highest_votes:.6f} votes "
+                    f"({highest_percent:.2f}%)"
+                )
+                lines.append(
+                    f"Lowest:  {lowest_candidate} with {lowest_votes:.6f} votes "
+                    f"({lowest_percent:.2f}%)"
+                )
+
+            if rnd.get("action"):
+                lines.append("")
+                lines.append(f"ACTION: {rnd['action']}")
 
             if rnd["elected_this_round"]:
-                lines.append(f"  Elected: {', '.join(rnd['elected_this_round'])}")
+                for candidate in rnd["elected_this_round"]:
+                    lines.append(f"ELECTED: {candidate}")
 
             if rnd["excluded_this_round"]:
-                lines.append(f"  Excluded: {rnd['excluded_this_round']}")
+                lines.append(f"EXCLUDED: {rnd['excluded_this_round']}")
 
             for note in rnd.get("notes", []):
-                lines.append(f"  Note: {note}")
+                lines.append(f"NOTE: {note}")
 
             lines.append("")
 
-        lines.append("Winners:")
+        lines.append("Final Results")
+        lines.append("-" * 72)
+
         if result["winners"]:
-            for winner in result["winners"]:
-                lines.append(f"  - {winner}")
+            for i, winner in enumerate(result["winners"], start=1):
+                lines.append(f"{i}. {winner}")
         else:
-            lines.append("  - No winners determined")
+            lines.append("No winners determined.")
+
         lines.append("")
-        lines.append("-" * 60)
         lines.append("")
 
     return "\n".join(lines)
