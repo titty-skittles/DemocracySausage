@@ -3,16 +3,13 @@ from __future__ import annotations
 import math
 import random
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk, simpledialog
 from dataclasses import dataclass
+from pathlib import Path
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-
-# =========================
-# Core election data types
-# =========================
 
 @dataclass
 class Ballot:
@@ -22,10 +19,6 @@ class Ballot:
 
 
 class ReturningOfficerPrompt:
-    """
-    Helper for GUI-based returning officer tie-break decisions.
-    """
-
     def __init__(self, parent: tk.Tk):
         self.parent = parent
 
@@ -34,14 +27,14 @@ class ReturningOfficerPrompt:
             f"{context}\n\n"
             f"The following candidates are still tied:\n"
             f"{', '.join(tied_candidates)}\n\n"
-            f"Type the EXACT candidate name to select."
+            f"Type the EXACT candidate name to choose."
         )
 
         while True:
             choice = simpledialog.askstring(
                 "Returning Officer Decision",
                 prompt,
-                parent=self.parent
+                parent=self.parent,
             )
 
             if choice is None:
@@ -53,13 +46,10 @@ class ReturningOfficerPrompt:
 
             messagebox.showerror(
                 "Invalid choice",
-                "Please type one of the tied candidate names exactly as shown."
+                "Please type one of the tied candidate names exactly as shown.",
+                parent=self.parent,
             )
 
-
-# =========================
-# STV counting engine
-# =========================
 
 class STVCounter:
     def __init__(
@@ -69,11 +59,6 @@ class STVCounter:
         ro_prompt: Optional[ReturningOfficerPrompt] = None,
         random_seed: Optional[int] = None,
     ):
-        """
-        tie_break_fallback:
-            - 'random'
-            - 'returning_officer'
-        """
         self.seats = seats
         self.tie_break_fallback = tie_break_fallback
         self.ro_prompt = ro_prompt
@@ -81,33 +66,42 @@ class STVCounter:
 
     @staticmethod
     def normalise_ballot(row: pd.Series, candidates: List[str]) -> List[str]:
-        ranked = []
+        ranked: List[Tuple[int, str]] = []
         seen_ranks = set()
 
         for candidate in candidates:
             value = row[candidate]
-            if pd.notna(value):
-                try:
-                    rank = int(value)
-                    if rank < 1:
+
+            if pd.isna(value):
+                continue
+
+            try:
+                if isinstance(value, str):
+                    value = value.strip()
+                    if value == "":
                         continue
-                    if rank in seen_ranks:
-                        # Duplicate ranking -> informal ballot
-                        return []
-                    seen_ranks.add(rank)
-                    ranked.append((rank, candidate))
-                except (ValueError, TypeError):
-                    return []
+                rank = int(float(value))
+            except (ValueError, TypeError):
+                return []
+
+            if rank < 1:
+                return []
+
+            if rank in seen_ranks:
+                return []
+
+            seen_ranks.add(rank)
+            ranked.append((rank, candidate))
 
         if not ranked:
             return []
 
         ranked.sort(key=lambda x: x[0])
-
-        # Optional formal check: rankings should be consecutive from 1
         ranks = [rank for rank, _ in ranked]
+
         if ranks[0] != 1:
             return []
+
         if ranks != list(range(1, len(ranks) + 1)):
             return []
 
@@ -125,14 +119,17 @@ class STVCounter:
     def count_votes(
         self,
         ballots: List[Ballot],
-        continuing: List[str]
+        continuing: List[str],
     ) -> Tuple[Dict[str, float], Dict[str, List[Ballot]]]:
-        tallies = {c: 0.0 for c in continuing}
-        piles = {c: [] for c in continuing}
+        tallies = {candidate: 0.0 for candidate in continuing}
+        piles = {candidate: [] for candidate in continuing}
 
         for ballot in ballots:
+            if ballot.weight <= 0:
+                continue
+
             candidate = self.next_active_preference(ballot, continuing)
-            if candidate is not None and ballot.weight > 0:
+            if candidate is not None:
                 tallies[candidate] += ballot.weight
                 piles[candidate].append(ballot)
 
@@ -144,45 +141,41 @@ class STVCounter:
         round_history: List[Dict[str, float]],
         context: str,
     ) -> str:
-        """
-        Resolve tie by:
-        1. Looking backwards through previous round tallies
-        2. Falling back to random or returning officer decision
-        """
         if len(tied_candidates) == 1:
             return tied_candidates[0]
 
-        # Look backwards through previous round totals
+        current_tied = tied_candidates[:]
+
         for previous_tallies in reversed(round_history):
-            scores = {
-                c: previous_tallies.get(c, 0.0)
-                for c in tied_candidates
-            }
-
+            scores = {candidate: previous_tallies.get(candidate, 0.0) for candidate in current_tied}
             unique_scores = sorted(set(scores.values()))
-            if len(unique_scores) > 1:
-                if "exclude" in context.lower():
-                    # For exclusion, exclude the candidate with the LOWEST prior total
-                    lowest = min(scores.values())
-                    narrowed = [c for c, v in scores.items() if abs(v - lowest) < 1e-9]
-                else:
-                    # For election order, choose the candidate with the HIGHEST prior total
-                    highest = max(scores.values())
-                    narrowed = [c for c, v in scores.items() if abs(v - highest) < 1e-9]
 
-                if len(narrowed) == 1:
-                    return narrowed[0]
+            if len(unique_scores) <= 1:
+                continue
 
-                tied_candidates = narrowed
+            if "exclude" in context.lower():
+                target_value = min(scores.values())
+            else:
+                target_value = max(scores.values())
 
-        # Fallback
+            narrowed = [
+                candidate
+                for candidate, value in scores.items()
+                if abs(value - target_value) < 1e-9
+            ]
+
+            if len(narrowed) == 1:
+                return narrowed[0]
+
+            current_tied = narrowed
+
         if self.tie_break_fallback == "random":
-            return self.random.choice(tied_candidates)
+            return self.random.choice(sorted(current_tied))
 
         if self.tie_break_fallback == "returning_officer":
-            if not self.ro_prompt:
+            if self.ro_prompt is None:
                 raise RuntimeError("Returning officer prompt is not available.")
-            return self.ro_prompt.choose(sorted(tied_candidates), context)
+            return self.ro_prompt.choose(sorted(current_tied), context)
 
         raise ValueError(f"Unknown tie-break fallback: {self.tie_break_fallback}")
 
@@ -192,24 +185,29 @@ class STVCounter:
         sheet_name: str,
         ballot_number_column: Optional[str] = None,
     ) -> Dict:
-        columns = list(df.columns)
+        columns = [str(col) for col in df.columns]
+        df = df.copy()
+        df.columns = columns
 
         if ballot_number_column and ballot_number_column in columns:
-            candidates = [c for c in columns if c != ballot_number_column]
-        elif columns and str(columns[0]).strip().lower() in {
-            "ballot num", "ballot number", "ballot", "id"
-        }:
+            candidates = [col for col in columns if col != ballot_number_column]
+        elif columns and columns[0].strip().lower() in {"ballot num", "ballot number", "ballot", "id"}:
             candidates = columns[1:]
         else:
             candidates = columns
+
+        if len(candidates) < 2:
+            raise ValueError(
+                f"Sheet '{sheet_name}' does not appear to contain candidate columns."
+            )
 
         ballots: List[Ballot] = []
         informal_count = 0
 
         for _, row in df.iterrows():
-            prefs = self.normalise_ballot(row, candidates)
-            if prefs:
-                ballots.append(Ballot(preferences=prefs))
+            preferences = self.normalise_ballot(row, candidates)
+            if preferences:
+                ballots.append(Ballot(preferences=preferences))
             else:
                 informal_count += 1
 
@@ -218,34 +216,51 @@ class STVCounter:
 
         elected: List[str] = []
         excluded: List[str] = []
-        continuing = candidates.copy()
-
-        rounds = []
+        continuing = candidates[:]
+        rounds: List[Dict] = []
         tally_history: List[Dict[str, float]] = []
+
+        if total_formal == 0:
+            return {
+                "sheet_name": sheet_name,
+                "total_formal_votes": 0,
+                "informal_votes": informal_count,
+                "quota": 0,
+                "winners": [],
+                "rounds": [
+                    {
+                        "tallies": {},
+                        "elected_this_round": [],
+                        "excluded_this_round": None,
+                        "notes": ["No formal votes were found on this sheet."],
+                    }
+                ],
+            }
 
         while len(elected) < self.seats and continuing:
             tallies, piles = self.count_votes(ballots, continuing)
             tally_history.append(tallies.copy())
 
             round_info = {
-                "tallies": {k: round(v, 6) for k, v in tallies.items()},
+                "tallies": {candidate: round(votes, 6) for candidate, votes in tallies.items()},
                 "elected_this_round": [],
                 "excluded_this_round": None,
                 "notes": [],
             }
 
-            # Find candidates at or above quota
-            at_quota = [c for c in continuing if tallies[c] >= quota]
+            at_quota = [candidate for candidate in continuing if tallies[candidate] >= quota]
 
             if at_quota:
-                # If multiple candidates reach quota together, use tie-break on election order if needed
-                # Highest tally first, then previous round totals, then fallback
-                ordered = []
-                remaining = at_quota.copy()
+                ordered_elections: List[str] = []
+                remaining = at_quota[:]
 
                 while remaining:
-                    highest = max(tallies[c] for c in remaining)
-                    tied = [c for c in remaining if abs(tallies[c] - highest) < 1e-9]
+                    highest = max(tallies[candidate] for candidate in remaining)
+                    tied = [
+                        candidate
+                        for candidate in remaining
+                        if abs(tallies[candidate] - highest) < 1e-9
+                    ]
 
                     if len(tied) == 1:
                         chosen = tied[0]
@@ -253,57 +268,70 @@ class STVCounter:
                         chosen = self.resolve_tie(
                             tied,
                             tally_history[:-1],
-                            f"Election order tie in {sheet_name}"
+                            f"Election order tie in {sheet_name}",
                         )
                         round_info["notes"].append(
-                            f"Election order tie between {', '.join(sorted(tied))}; resolved in favour of {chosen}."
+                            f"Election order tie between {', '.join(sorted(tied))}; "
+                            f"resolved in favour of {chosen}."
                         )
 
-                    ordered.append(chosen)
+                    ordered_elections.append(chosen)
                     remaining.remove(chosen)
 
-                for candidate in ordered:
-                    if candidate not in elected and len(elected) < self.seats:
-                        elected.append(candidate)
-                        round_info["elected_this_round"].append(candidate)
+                for candidate in ordered_elections:
+                    if candidate in elected or len(elected) >= self.seats:
+                        continue
 
-                        total_for_candidate = tallies[candidate]
-                        surplus = total_for_candidate - quota
+                    elected.append(candidate)
+                    round_info["elected_this_round"].append(candidate)
 
-                        if surplus > 1e-9 and total_for_candidate > 0:
-                            transfer_value = surplus / total_for_candidate
-                            for ballot in piles[candidate]:
-                                ballot.weight *= transfer_value
-                                ballot.index += 1
-                            round_info["notes"].append(
-                                f"{candidate} elected with surplus {surplus:.6f}; transferred at value {transfer_value:.6f}."
-                            )
-                        else:
-                            for ballot in piles[candidate]:
-                                ballot.weight = 0.0
-                            round_info["notes"].append(
-                                f"{candidate} elected exactly on quota; no surplus transferred."
-                            )
+                    candidate_total = tallies[candidate]
+                    surplus = candidate_total - quota
 
-                continuing = [c for c in continuing if c not in round_info["elected_this_round"]]
+                    if surplus > 1e-9 and candidate_total > 0:
+                        transfer_value = surplus / candidate_total
+                        for ballot in piles[candidate]:
+                            ballot.weight *= transfer_value
+                            ballot.index += 1
+                        round_info["notes"].append(
+                            f"{candidate} elected with surplus {surplus:.6f}; "
+                            f"transferred at value {transfer_value:.6f}."
+                        )
+                    else:
+                        for ballot in piles[candidate]:
+                            ballot.weight = 0.0
+                        round_info["notes"].append(
+                            f"{candidate} elected exactly on quota; no surplus transferred."
+                        )
+
+                continuing = [
+                    candidate
+                    for candidate in continuing
+                    if candidate not in round_info["elected_this_round"]
+                ]
                 rounds.append(round_info)
 
-                if len(continuing) <= self.seats - len(elected):
-                    for c in continuing:
-                        elected.append(c)
-                    rounds.append({
-                        "tallies": {},
-                        "elected_this_round": continuing.copy(),
-                        "excluded_this_round": None,
-                        "notes": ["Remaining candidates filled the remaining vacancies."]
-                    })
+                remaining_seats = self.seats - len(elected)
+                if remaining_seats > 0 and len(continuing) <= remaining_seats:
+                    elected.extend(continuing)
+                    rounds.append(
+                        {
+                            "tallies": {},
+                            "elected_this_round": continuing[:],
+                            "excluded_this_round": None,
+                            "notes": ["Remaining candidates filled the remaining vacancies."],
+                        }
+                    )
                     break
 
                 continue
 
-            # No one at quota -> exclude lowest
-            lowest = min(tallies[c] for c in continuing)
-            tied_lowest = [c for c in continuing if abs(tallies[c] - lowest) < 1e-9]
+            lowest = min(tallies[candidate] for candidate in continuing)
+            tied_lowest = [
+                candidate
+                for candidate in continuing
+                if abs(tallies[candidate] - lowest) < 1e-9
+            ]
 
             if len(tied_lowest) == 1:
                 to_exclude = tied_lowest[0]
@@ -311,10 +339,11 @@ class STVCounter:
                 to_exclude = self.resolve_tie(
                     tied_lowest,
                     tally_history[:-1],
-                    f"Exclusion tie in {sheet_name}"
+                    f"Exclusion tie in {sheet_name}",
                 )
                 round_info["notes"].append(
-                    f"Exclusion tie between {', '.join(sorted(tied_lowest))}; resolved by excluding {to_exclude}."
+                    f"Exclusion tie between {', '.join(sorted(tied_lowest))}; "
+                    f"resolved by excluding {to_exclude}."
                 )
 
             excluded.append(to_exclude)
@@ -326,15 +355,17 @@ class STVCounter:
             continuing.remove(to_exclude)
             rounds.append(round_info)
 
-            if len(continuing) <= self.seats - len(elected):
-                for c in continuing:
-                    elected.append(c)
-                rounds.append({
-                    "tallies": {},
-                    "elected_this_round": continuing.copy(),
-                    "excluded_this_round": None,
-                    "notes": ["Remaining candidates filled the remaining vacancies."]
-                })
+            remaining_seats = self.seats - len(elected)
+            if remaining_seats > 0 and len(continuing) <= remaining_seats:
+                elected.extend(continuing)
+                rounds.append(
+                    {
+                        "tallies": {},
+                        "elected_this_round": continuing[:],
+                        "excluded_this_round": None,
+                        "notes": ["Remaining candidates filled the remaining vacancies."],
+                    }
+                )
                 break
 
         return {
@@ -342,14 +373,15 @@ class STVCounter:
             "total_formal_votes": total_formal,
             "informal_votes": informal_count,
             "quota": quota,
-            "winners": elected[:self.seats],
+            "winners": elected[: self.seats],
             "rounds": rounds,
         }
 
 
-# =========================
-# Workbook runner
-# =========================
+def get_sheet_names(file_path: str) -> List[str]:
+    excel_file = pd.ExcelFile(file_path)
+    return excel_file.sheet_names
+
 
 def count_workbook(
     file_path: str,
@@ -357,6 +389,7 @@ def count_workbook(
     tie_break_fallback: str,
     ro_prompt: Optional[ReturningOfficerPrompt] = None,
     random_seed: Optional[int] = None,
+    selected_sheet: Optional[str] = None,
 ) -> List[Dict]:
     workbook = pd.read_excel(file_path, sheet_name=None)
 
@@ -367,16 +400,21 @@ def count_workbook(
         random_seed=random_seed,
     )
 
-    results = []
-    for sheet_name, df in workbook.items():
-        result = counter.count_sheet(df, sheet_name)
-        results.append(result)
+    results: List[Dict] = []
+
+    if selected_sheet and selected_sheet != "All sheets":
+        if selected_sheet not in workbook:
+            raise ValueError(f"Sheet '{selected_sheet}' was not found in the workbook.")
+        results.append(counter.count_sheet(workbook[selected_sheet], selected_sheet))
+    else:
+        for sheet_name, df in workbook.items():
+            results.append(counter.count_sheet(df, sheet_name))
 
     return results
 
 
 def format_results(results: List[Dict]) -> str:
-    lines = []
+    lines: List[str] = []
 
     for result in results:
         lines.append(f"=== {result['sheet_name']} ===")
@@ -385,22 +423,30 @@ def format_results(results: List[Dict]) -> str:
         lines.append(f"Quota: {result['quota']}")
         lines.append("")
 
-        for i, rnd in enumerate(result["rounds"], start=1):
-            lines.append(f"Round {i}")
+        for round_number, rnd in enumerate(result["rounds"], start=1):
+            lines.append(f"Round {round_number}")
+
             if rnd["tallies"]:
                 for candidate, votes in rnd["tallies"].items():
                     lines.append(f"  {candidate}: {votes:.6f}")
+
             if rnd["elected_this_round"]:
                 lines.append(f"  Elected: {', '.join(rnd['elected_this_round'])}")
+
             if rnd["excluded_this_round"]:
                 lines.append(f"  Excluded: {rnd['excluded_this_round']}")
+
             for note in rnd.get("notes", []):
                 lines.append(f"  Note: {note}")
+
             lines.append("")
 
         lines.append("Winners:")
-        for winner in result["winners"]:
-            lines.append(f"  - {winner}")
+        if result["winners"]:
+            for winner in result["winners"]:
+                lines.append(f"  - {winner}")
+        else:
+            lines.append("  - No winners determined")
         lines.append("")
         lines.append("-" * 60)
         lines.append("")
@@ -408,69 +454,99 @@ def format_results(results: List[Dict]) -> str:
     return "\n".join(lines)
 
 
-# =========================
-# GUI
-# =========================
-
 class ElectionApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Democracy Sausage")
-        self.root.geometry("900x700")
+        self.root.geometry("980x760")
 
         self.file_path_var = tk.StringVar()
+        self.sheet_var = tk.StringVar(value="All sheets")
         self.seats_var = tk.StringVar(value="2")
         self.tie_break_var = tk.StringVar(value="random")
         self.seed_var = tk.StringVar(value="")
 
+        self.sheet_combo: Optional[ttk.Combobox] = None
+        self.output: Optional[tk.Text] = None
+
         self.build_ui()
 
-    def build_ui(self):
+    def build_ui(self) -> None:
         main = ttk.Frame(self.root, padding=12)
         main.pack(fill="both", expand=True)
 
-        # File row
-        file_frame = ttk.LabelFrame(main, text="Workbook", padding=10)
-        file_frame.pack(fill="x", pady=(0, 10))
+        workbook_frame = ttk.LabelFrame(main, text="Workbook", padding=10)
+        workbook_frame.pack(fill="x", pady=(0, 10))
 
-        ttk.Entry(file_frame, textvariable=self.file_path_var).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(file_frame, text="Browse...", command=self.browse_file).pack(side="left")
+        ttk.Entry(workbook_frame, textvariable=self.file_path_var).pack(
+            side="left",
+            fill="x",
+            expand=True,
+            padx=(0, 8),
+        )
+        ttk.Button(workbook_frame, text="Browse...", command=self.browse_file).pack(side="left")
 
-        # Settings
         settings = ttk.LabelFrame(main, text="Settings", padding=10)
         settings.pack(fill="x", pady=(0, 10))
 
-        ttk.Label(settings, text="Seats to fill per race:").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(settings, textvariable=self.seats_var, width=10).grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(settings, text="Seats to fill per race:").grid(
+            row=0, column=0, sticky="w", padx=(0, 10), pady=4
+        )
+        ttk.Entry(settings, textvariable=self.seats_var, width=12).grid(
+            row=0, column=1, sticky="w", pady=4
+        )
 
-        ttk.Label(settings, text="Tie-break fallback:").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=4)
+        ttk.Label(settings, text="Race / sheet:").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=4
+        )
+        self.sheet_combo = ttk.Combobox(
+            settings,
+            textvariable=self.sheet_var,
+            values=["All sheets"],
+            state="readonly",
+            width=32,
+        )
+        self.sheet_combo.grid(row=1, column=1, sticky="w", pady=4)
+        self.sheet_combo.set("All sheets")
+
+        ttk.Label(settings, text="Tie-break fallback:").grid(
+            row=2, column=0, sticky="w", padx=(0, 10), pady=4
+        )
         tie_combo = ttk.Combobox(
             settings,
             textvariable=self.tie_break_var,
             values=["random", "returning_officer"],
             state="readonly",
-            width=20
+            width=20,
         )
-        tie_combo.grid(row=1, column=1, sticky="w", pady=4)
+        tie_combo.grid(row=2, column=1, sticky="w", pady=4)
 
-        ttk.Label(settings, text="Random seed (optional):").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
-        ttk.Entry(settings, textvariable=self.seed_var, width=10).grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Label(settings, text="Random seed (optional):").grid(
+            row=3, column=0, sticky="w", padx=(0, 10), pady=4
+        )
+        ttk.Entry(settings, textvariable=self.seed_var, width=12).grid(
+            row=3, column=1, sticky="w", pady=4
+        )
 
         ttk.Label(
             settings,
-            text="Tie-breaks always use previous round totals first. "
-                 "This setting is only used if that still does not resolve the tie."
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            text=(
+                "Tie-breaks always use previous round totals first. "
+                "The fallback setting is only used if that does not resolve the tie."
+            ),
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
-        # Buttons
         button_row = ttk.Frame(main)
         button_row.pack(fill="x", pady=(0, 10))
 
         ttk.Button(button_row, text="Count Election", command=self.run_count).pack(side="left")
-        ttk.Button(button_row, text="Save Results...", command=self.save_results).pack(side="left", padx=(8, 0))
-        ttk.Button(button_row, text="Clear", command=self.clear_output).pack(side="left", padx=(8, 0))
+        ttk.Button(button_row, text="Save Results...", command=self.save_results).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(button_row, text="Clear", command=self.clear_output).pack(
+            side="left", padx=(8, 0)
+        )
 
-        # Output
         output_frame = ttk.LabelFrame(main, text="Results", padding=10)
         output_frame.pack(fill="both", expand=True)
 
@@ -481,26 +557,58 @@ class ElectionApp:
         scrollbar.pack(side="right", fill="y")
         self.output.config(yscrollcommand=scrollbar.set)
 
-    def browse_file(self):
+    def browse_file(self) -> None:
         file_path = filedialog.askopenfilename(
             title="Select election workbook",
-            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
         )
-        if file_path:
-            self.file_path_var.set(file_path)
 
-    def run_count(self):
-        file_path = self.file_path_var.get().strip()
         if not file_path:
-            messagebox.showerror("Missing file", "Please select an Excel workbook.")
+            return
+
+        self.file_path_var.set(file_path)
+        self.load_sheet_names(file_path)
+
+    def load_sheet_names(self, file_path: str) -> None:
+        if self.sheet_combo is None:
             return
 
         try:
-            seats = int(self.seats_var.get())
+            sheet_names = get_sheet_names(file_path)
+            values = ["All sheets"] + sheet_names
+            self.sheet_combo["values"] = values
+            self.sheet_combo.set("All sheets")
+            self.sheet_var.set("All sheets")
+        except Exception as exc:
+            self.sheet_combo["values"] = ["All sheets"]
+            self.sheet_combo.set("All sheets")
+            self.sheet_var.set("All sheets")
+            messagebox.showerror(
+                "Workbook error",
+                f"Could not read sheet names:\n{exc}",
+                parent=self.root,
+            )
+
+    def run_count(self) -> None:
+        file_path = self.file_path_var.get().strip()
+        if not file_path:
+            messagebox.showerror("Missing file", "Please select an Excel workbook.", parent=self.root)
+            return
+
+        if not Path(file_path).exists():
+            messagebox.showerror("File not found", "The selected workbook does not exist.", parent=self.root)
+            return
+
+        try:
+            seats = int(self.seats_var.get().strip())
             if seats < 1:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Invalid seats", "Seats must be a whole number greater than 0.")
+            messagebox.showerror(
+                "Invalid seats",
+                "Seats must be a whole number greater than 0.",
+                parent=self.root,
+            )
             return
 
         seed_text = self.seed_var.get().strip()
@@ -509,7 +617,11 @@ class ElectionApp:
             try:
                 random_seed = int(seed_text)
             except ValueError:
-                messagebox.showerror("Invalid seed", "Random seed must be a whole number.")
+                messagebox.showerror(
+                    "Invalid seed",
+                    "Random seed must be a whole number.",
+                    parent=self.root,
+                )
                 return
 
         ro_prompt = ReturningOfficerPrompt(self.root)
@@ -521,41 +633,43 @@ class ElectionApp:
                 tie_break_fallback=self.tie_break_var.get(),
                 ro_prompt=ro_prompt,
                 random_seed=random_seed,
+                selected_sheet=self.sheet_var.get(),
             )
             formatted = format_results(results)
             self.output.delete("1.0", tk.END)
             self.output.insert(tk.END, formatted)
-        except Exception as e:
-            messagebox.showerror("Count failed", str(e))
+        except Exception as exc:
+            messagebox.showerror("Count failed", str(exc), parent=self.root)
 
-    def save_results(self):
+    def save_results(self) -> None:
         content = self.output.get("1.0", tk.END).strip()
         if not content:
-            messagebox.showinfo("Nothing to save", "There are no results to save yet.")
+            messagebox.showinfo("Nothing to save", "There are no results to save yet.", parent=self.root)
             return
 
         file_path = filedialog.asksaveasfilename(
             title="Save results",
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
+
         if not file_path:
             return
 
         try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            messagebox.showinfo("Saved", "Results saved successfully.")
-        except Exception as e:
-            messagebox.showerror("Save failed", str(e))
+            with open(file_path, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            messagebox.showinfo("Saved", "Results saved successfully.", parent=self.root)
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc), parent=self.root)
 
-    def clear_output(self):
+    def clear_output(self) -> None:
         self.output.delete("1.0", tk.END)
 
 
-def main():
+def main() -> None:
     root = tk.Tk()
-    app = ElectionApp(root)
+    ElectionApp(root)
     root.mainloop()
 
 

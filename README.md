@@ -21,8 +21,8 @@ This tool was designed for **Student Representative Council (SRC) elections**, b
   - Returning officer decision
 - Simple desktop GUI
 - Reads **Excel spreadsheets**
-- Supports **multiple races in one workbook**
-
+- Supports multiple races in one workbook
+- Can count either all sheets or one selected race
 ---
 
 # Counting Method
@@ -132,9 +132,10 @@ python src_election_gui.py
 Then:
 
 1. Select your Excel workbook
-2. Set the number of seats
-3. Choose the tie-break fallback method
-4. Click **Count Election**
+2. Choose whether to count all sheets or one race
+3. Set the number of seats
+4. Choose the tie-break fallback method
+5. Click **Count Election**
 
 Results will appear in the results panel.
 
