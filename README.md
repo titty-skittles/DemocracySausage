@@ -113,11 +113,10 @@ During installation ensure **"Add Python to PATH"** is checked.
 
 ## 2. Install dependencies
 
-Run:
+Open a terminal in the project folder and run:
 
-```
-pip install pandas openpyxl
-```
+```bash
+pip install -r requirements.txt
 
 ---
 
@@ -126,7 +125,10 @@ pip install pandas openpyxl
 Run the GUI:
 
 ```
-python src_election_gui.py
+Run the application with:
+
+```bash
+python main.py
 ```
 
 Then:
@@ -169,8 +171,13 @@ Example structure:
 
 ```
 Democracy-Sausage/
-├─ main.py
-└─ README.md
+├── main.py
+├── gui.py
+├── counter.py
+├── workbook.py
+├── formatting.py
+├── requirements.txt
+└── README.md
 ```
 
 ---
