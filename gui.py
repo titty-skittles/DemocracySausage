@@ -56,6 +56,7 @@ class ElectionApp:
 
         self.sheet_combo: Optional[ttk.Combobox] = None
         self.output: Optional[tk.Text] = None
+        self.last_results = None
 
         self.build_ui()
 
@@ -128,7 +129,10 @@ class ElectionApp:
         button_row.pack(fill="x", pady=(0, 10))
 
         ttk.Button(button_row, text="Count Election", command=self.run_count).pack(side="left")
-        ttk.Button(button_row, text="Save Results...", command=self.save_results).pack(
+        ttk.Button(button_row, text="Save Log...", command=self.save_log).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(button_row, text="Save Official Report...", command=self.save_official_report).pack(
             side="left", padx=(8, 0)
         )
         ttk.Button(button_row, text="Clear", command=self.clear_output).pack(
@@ -180,11 +184,19 @@ class ElectionApp:
     def run_count(self) -> None:
         file_path = self.file_path_var.get().strip()
         if not file_path:
-            messagebox.showerror("Missing file", "Please select an Excel workbook.", parent=self.root)
+            messagebox.showerror(
+                "Missing file",
+                "Please select an Excel workbook.",
+                parent=self.root,
+            )
             return
 
         if not Path(file_path).exists():
-            messagebox.showerror("File not found", "The selected workbook does not exist.", parent=self.root)
+            messagebox.showerror(
+                "File not found",
+                "The selected workbook does not exist.",
+                parent=self.root,
+            )
             return
 
         try:
@@ -226,51 +238,76 @@ class ElectionApp:
 
             self.last_results = results
             formatted = format_results(results)
-            self.output.delete("1.0", tk.END)
-            self.output.insert(tk.END, formatted)
+
+            if self.output is not None:
+                self.output.delete("1.0", tk.END)
+                self.output.insert(tk.END, formatted)
+
         except Exception as exc:
             messagebox.showerror("Count failed", str(exc), parent=self.root)
 
-    def save_results(self) -> None:
-
+    def save_log(self) -> None:
         if self.output is None:
             return
 
         content = self.output.get("1.0", tk.END).strip()
-
         if not content:
             messagebox.showinfo(
                 "Nothing to save",
-                "There are no results to save yet.",
+                "There is no log to save yet.",
                 parent=self.root,
             )
             return
 
         file_path = filedialog.asksaveasfilename(
-            title="Save results report",
+            title="Save detailed log",
             defaultextension=".txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
 
         if not file_path:
             return
 
         try:
-            # Use the official report format instead of raw logs
-            results = self.last_results
-            report = format_official_report(results)
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(report)
-
+            with open(file_path, "w", encoding="utf-8") as handle:
+                handle.write(content)
             messagebox.showinfo(
                 "Saved",
-                "Election report saved successfully.",
-                parent=self.root
+                "Detailed log saved successfully.",
+                parent=self.root,
             )
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc), parent=self.root)
 
-        except Exception as e:
-            messagebox.showerror("Save failed", str(e), parent=self.root)
+    def save_official_report(self) -> None:
+        if not self.last_results:
+            messagebox.showinfo(
+                "Nothing to save",
+                "There is no official report to save yet.",
+                parent=self.root,
+            )
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title="Save official report",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+
+        if not file_path:
+            return
+
+        try:
+            report = format_official_report(self.last_results)
+            with open(file_path, "w", encoding="utf-8") as handle:
+                handle.write(report)
+            messagebox.showinfo(
+                "Saved",
+                "Official report saved successfully.",
+                parent=self.root,
+            )
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc), parent=self.root)
 
     def clear_output(self) -> None:
         if self.output is not None:
